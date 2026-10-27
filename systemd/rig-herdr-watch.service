@@ -1,0 +1,13 @@
+[Unit]
+Description=Lay out new OpenRig spaces in herdr (one tab per pod)
+
+[Service]
+Type=simple
+# install.sh fills in PATH so the service finds rig, herdr and tmux.
+Environment=PATH=@PATH@
+ExecStart=@BIN@/rig-herdr-watch
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
