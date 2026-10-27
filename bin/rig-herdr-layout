@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""Lay out a rig's herdr space: one tab per pod.
+
+Tab 1 holds only the person's primary contact (the first pod's first member;
+the kernel's operator). Leftover members of that pod get tab 2. Every other
+pod follows in spec order, its members as panes. Existing panes are moved, not
+restarted; seats without a pane get one attached to their tmux session.
+Panes that attach to no seat of the rig end up in a final "other" tab.
+
+Usage: rig-herdr-layout <rig> [<rig> ...]   (opens the space first if missing)
+       rig-herdr-layout --workspace <herdr-workspace-id> <rig>
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+
+import yaml
+
+PRIMARY_OVERRIDE = {"kernel": "operator.agent"}
+LABEL_OVERRIDE = {("kernel", "operator.agent"): "operator",
+                  ("kernel", "operator.human"): "dashboard",
+                  ("kernel", "advisor.lead"): "advisor",
+                  ("kernel", "queue.worker"): "queue"}
+
+
+def run(*args):
+    return subprocess.run(args, check=True, capture_output=True, text=True).stdout
+
+
+def herdr(*args):
+    out = run("herdr", *args).strip()
+    return json.loads(out)["result"] if out else {}
+
+
+def rig_seats(rig):
+    out = json.loads(run("rig", "ps", "--nodes", "--rig", rig, "--json"))
+    rows = out if isinstance(out, list) else next(v for v in out.values() if isinstance(v, list))
+    rows = [r for r in rows if r.get("rigName") == rig]
+    if not rows:
+        sys.exit(f"{rig}: no seats found")
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "rig.yaml")
+        run("rig", "export", rows[0]["rigId"], "-o", path)
+        spec = yaml.safe_load(open(path))
+    sessions = {r["logicalId"]: r["canonicalSessionName"] for r in rows}
+    runtimes = {r["logicalId"]: r.get("runtime") or "" for r in rows}
+    pods = [[f"{p['id']}.{m['id']}" for m in p["members"]] for p in spec["pods"]]
+    return pods, sessions, runtimes
+
+
+def pane_session(pane_id):
+    info = herdr("pane", "process-info", "--pane", pane_id)["process_info"]
+    for proc in info.get("foreground_processes", []):
+        m = re.search(r"attach(?:-session)?\s+-t\s+'?=?([^'\s]+)", proc.get("cmdline", ""))
+        if m:
+            return m.group(1)
+    return None
+
+
+def find_workspace(sessions):
+    wanted = set(sessions.values())
+    best, best_hits = None, 0
+    for ws in herdr("workspace", "list")["workspaces"]:
+        panes = herdr("pane", "list", "--workspace", ws["workspace_id"])["panes"]
+        hits = sum(1 for p in panes if pane_session(p["pane_id"]) in wanted)
+        if hits > best_hits:
+            best, best_hits = ws["workspace_id"], hits
+    return best
+
+
+def tmux_has(session):
+    return subprocess.run(["tmux", "has-session", "-t", f"={session}"],
+                          capture_output=True).returncode == 0
+
+
+def place(panes, tab_label):
+    """Move panes into one new tab: 1 | 2/3 for three, a 2x2 grid for four."""
+    first = panes[0]
+    tab = herdr("pane", "move", first, "--new-tab")["move_result"]["created_tab"]["tab_id"]
+    herdr("tab", "rename", tab, tab_label)
+    layout = {1: [], 2: [(1, 0, "right")], 3: [(1, 0, "right"), (2, 1, "down")],
+              4: [(1, 0, "right"), (2, 0, "down"), (3, 1, "down")]}.get(len(panes))
+    if layout is None:
+        layout = [(i, i - 1, "right") for i in range(1, len(panes))]
+    for i, target, direction in layout:
+        herdr("pane", "move", panes[i], "--tab", tab, "--target-pane", panes[target],
+              "--split", direction)
+
+
+def layout(rig, ws=None):
+    pods, sessions, runtimes = rig_seats(rig)
+    ws = ws or find_workspace(sessions)
+    if ws is None:
+        run("rig", "terminal", "open", rig, "--provider", "herdr")
+        ws = find_workspace(sessions)
+        if ws is None:
+            sys.exit(f"{rig}: no herdr space found after opening one")
+
+    by_session = {}
+    others = []
+    for p in herdr("pane", "list", "--workspace", ws)["panes"]:
+        s = pane_session(p["pane_id"])
+        if s in sessions.values() and s not in by_session:
+            by_session[s] = p["pane_id"]
+        else:
+            others.append(p["pane_id"])
+
+    def label(logical):
+        return LABEL_OVERRIDE.get((rig, logical), logical)
+
+    def pane_for(logical):
+        session = sessions.get(logical)
+        if session is None:
+            return None
+        if session in by_session:
+            herdr("pane", "rename", by_session[session], label(logical))
+            return by_session[session]
+        if not tmux_has(session):
+            print(f"  {logical}: no live tmux session, skipped")
+            return None
+        tab = herdr("tab", "create", "--workspace", ws, "--no-focus")
+        pane = tab["root_pane"]["pane_id"] if "root_pane" in tab else \
+            herdr("pane", "list", "--workspace", ws)["panes"][-1]["pane_id"]
+        agent = {"claude-code": "claude", "codex": "codex"}.get(runtimes.get(logical))
+        env = f"env HERDR_AGENT={agent} " if agent else ""
+        herdr("pane", "run", pane, f"{env}/usr/bin/tmux attach -t '{session}'")
+        herdr("pane", "rename", pane, label(logical))
+        by_session[session] = pane
+        return pane
+
+    primary = PRIMARY_OVERRIDE.get(rig, pods[0][0])
+    home = next(p for p in pods if primary in p)
+    groups = [([primary], label(primary))]
+    rest = [m for m in home if m != primary]
+    if rest:
+        groups.append((rest, label(rest[0]) if len(rest) == 1 else home[0].split(".")[0]))
+    for pod in pods:
+        if pod is not home:
+            groups.append((pod, label(pod[0]) if len(pod) == 1 else pod[0].split(".")[0]))
+
+    for members, tab_label in groups:
+        panes = [p for p in (pane_for(m) for m in members) if p]
+        if panes:
+            place(panes, tab_label)
+            print(f"  tab {tab_label}: {', '.join(label(m) for m in members)}")
+    if others:
+        place(others, "other")
+        print(f"  tab other: {len(others)} pane(s) not attached to a seat")
+    first = herdr("tab", "list", "--workspace", ws)["tabs"][0]["tab_id"]
+    herdr("tab", "focus", first)
+
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    if len(args) == 3 and args[0] == "--workspace":
+        print(args[2])
+        layout(args[2], args[1])
+    elif args and not args[0].startswith("-"):
+        for name in args:
+            print(name)
+            layout(name)
+    else:
+        sys.exit(__doc__.strip())

@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""Lay out new OpenRig spaces in herdr as they appear.
+
+Listens to herdr's event stream. Once a space has been quiet for a few seconds
+(OpenRig attaches seats one by one), any space still in OpenRig's default
+layout is handed to rig-herdr-layout:
+
+- a tab labelled `openrig:rig:<rig>#...` (what `rig terminal open <rig>` makes);
+- the kernel space ("openrig kernel") while it has no "queue" tab.
+
+Spaces already laid out lose those markers, so a layout runs once per space.
+"""
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import time
+
+SOCKET = os.path.expanduser("~/.config/herdr/herdr.sock")
+QUIET_SECONDS = 8
+RETRY_SECONDS = 10
+EVENTS = ["workspace.created", "tab.created", "tab.renamed", "pane.created"]
+LAYOUT = shutil.which("rig-herdr-layout") or os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                          "rig-herdr-layout")
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+def herdr(*args):
+    out = subprocess.run(["herdr", *args], check=True, capture_output=True, text=True).stdout
+    return json.loads(out)["result"]
+
+
+def pending_spaces():
+    """(workspace id, rig) for every space still in OpenRig's default layout."""
+    found = []
+    for ws in herdr("workspace", "list")["workspaces"]:
+        labels = [t["label"] for t in herdr("tab", "list", "--workspace", ws["workspace_id"])["tabs"]]
+        rig = next((l[len("openrig:rig:"):].split("#")[0] for l in labels
+                    if l.startswith("openrig:rig:")), None)
+        if rig is None and ws["label"] == "openrig kernel" and "queue" not in labels:
+            rig = "kernel"
+        if rig:
+            found.append((ws["workspace_id"], rig))
+    return found
+
+
+def sweep(failed):
+    for ws, rig in pending_spaces():
+        if (ws, rig) in failed:
+            continue
+        log(f"laying out {rig} in {ws}")
+        result = subprocess.run([LAYOUT, "--workspace", ws, rig], capture_output=True, text=True)
+        log(result.stdout.strip())
+        if result.returncode != 0:
+            log(f"layout failed for {rig} in {ws}; not retrying it: {result.stderr.strip()[-500:]}")
+            failed.add((ws, rig))
+
+
+def watch(failed):
+    sock = socket.socket(socket.AF_UNIX)
+    sock.connect(SOCKET)
+    request = {"id": "rig-herdr-watch", "method": "events.subscribe",
+               "params": {"subscriptions": [{"type": t} for t in EVENTS]}}
+    sock.sendall((json.dumps(request) + "\n").encode())
+    log("subscribed to herdr events")
+    sweep(failed)
+    due = None
+    buf = b""
+    while True:
+        sock.settimeout(max(0.5, due - time.monotonic()) if due else None)
+        try:
+            chunk = sock.recv(65536)
+        except socket.timeout:
+            chunk = None
+        if chunk == b"":
+            raise ConnectionError("herdr closed the event stream")
+        if chunk:
+            buf += chunk
+            *lines, buf = buf.split(b"\n")
+            if any(b'"event"' in line for line in lines):
+                due = time.monotonic() + QUIET_SECONDS
+        if due and time.monotonic() >= due:
+            due = None
+            sweep(failed)
+
+
+def main():
+    failed = set()
+    while True:
+        try:
+            watch(failed)
+        except (OSError, ConnectionError, subprocess.CalledProcessError, ValueError) as e:
+            log(f"{e}; retrying in {RETRY_SECONDS}s")
+            time.sleep(RETRY_SECONDS)
+
+
+if __name__ == "__main__":
+    if sys.argv[1:]:
+        sys.exit(__doc__.strip())
+    main()
