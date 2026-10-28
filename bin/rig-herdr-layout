@@ -53,8 +53,15 @@ def rig_seats(rig):
 
 def pane_session(pane_id):
     info = herdr("pane", "process-info", "--pane", pane_id)["process_info"]
-    for proc in info.get("foreground_processes", []):
-        m = re.search(r"attach(?:-session)?\s+-t\s+'?=?([^'\s]+)", proc.get("cmdline", ""))
+    procs = info.get("foreground_processes", [])
+    # OpenRig 0.7+ wraps the attach: `... 'openrig-tile' '<session>' '/usr/bin/tmux'`, and the
+    # inner attach targets a session id ($17), so read the session name from the wrapper first.
+    for proc in procs:
+        m = re.search(r"openrig-tile'?\s+'?([^'\s]+)", proc.get("cmdline", ""))
+        if m:
+            return m.group(1)
+    for proc in procs:
+        m = re.search(r"attach(?:-session)?\s+-t\s+'?=?([^'\s$]+)", proc.get("cmdline", ""))
         if m:
             return m.group(1)
     return None
