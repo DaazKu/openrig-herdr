@@ -3,7 +3,7 @@
 Lays out OpenRig rigs in [herdr](https://herdr.dev) the way I want to read them:
 
 - **Tab 1:** the rig's primary point of contact, alone. That's the first member of the first pod; for the
-  kernel, the operator.
+  kernel, the advisor.
 - **Tab 2:** the other members of that first pod, if any.
 - **Then one tab per pod**, in spec order, with its members as panes (side by side, or a grid for four).
 
