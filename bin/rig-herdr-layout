@@ -2,7 +2,7 @@
 """Lay out a rig's herdr space: one tab per pod.
 
 Tab 1 holds only the person's primary contact (the first pod's first member;
-the kernel's operator). Leftover members of that pod get tab 2. Every other
+the kernel's advisor). Leftover members of that pod get tab 2. Every other
 pod follows in spec order, its members as panes. Existing panes are moved, not
 restarted; seats without a pane get one attached to their tmux session.
 It never switches herdr to another space.
@@ -20,7 +20,6 @@ import tempfile
 
 import yaml
 
-PRIMARY_OVERRIDE = {"kernel": "operator.agent"}
 LABEL_OVERRIDE = {("kernel", "operator.agent"): "operator",
                   ("kernel", "operator.human"): "dashboard",
                   ("kernel", "advisor.lead"): "advisor",
@@ -139,7 +138,7 @@ def layout(rig, ws=None):
         by_session[session] = pane
         return pane
 
-    primary = PRIMARY_OVERRIDE.get(rig, pods[0][0])
+    primary = pods[0][0]
     home = next(p for p in pods if primary in p)
     groups = [([primary], label(primary))]
     rest = [m for m in home if m != primary]
