@@ -6,6 +6,8 @@ Lays out OpenRig rigs in [herdr](https://herdr.dev) the way I want to read them:
   kernel, the advisor.
 - **Tab 2:** the other members of that first pod, if any.
 - **Then one tab per pod**, in spec order, with its members as panes (side by side, or a grid for four).
+- **Kernel:** advisor, operator, dashboard and queue each get a tab, in that order. The dashboard
+  never shares a tab.
 
 OpenRig's own `rig terminal open` fills tabs nine panes at a time and has no per-pod option, so this
 repo does it from the herdr side. Seats are never restarted: existing panes are moved, and a seat

@@ -3,8 +3,9 @@
 
 Tab 1 holds only the person's primary contact (the first pod's first member;
 the kernel's advisor). Leftover members of that pod get tab 2. Every other
-pod follows in spec order, its members as panes. Existing panes are moved, not
-restarted; seats without a pane get one attached to their tmux session.
+pod follows in spec order, its members as panes; the kernel's dashboard always
+gets a tab of its own. Existing panes are moved, not restarted; seats without
+a pane get one attached to their tmux session.
 It never switches herdr to another space.
 Panes that attach to no seat of the rig end up in a final "other" tab.
 
@@ -24,6 +25,8 @@ LABEL_OVERRIDE = {("kernel", "operator.agent"): "operator",
                   ("kernel", "operator.human"): "dashboard",
                   ("kernel", "advisor.lead"): "advisor",
                   ("kernel", "queue.worker"): "queue"}
+# Seats that always get a tab of their own, right after the rest of their pod.
+SOLO = {("kernel", "operator.human")}
 
 
 def run(*args):
@@ -138,15 +141,19 @@ def layout(rig, ws=None):
         by_session[session] = pane
         return pane
 
+    def pod_groups(members):
+        shared = [m for m in members if (rig, m) not in SOLO]
+        groups = [([m], label(m)) for m in members if (rig, m) in SOLO]
+        if shared:
+            groups.insert(0, (shared, label(shared[0]) if len(shared) == 1 else shared[0].split(".")[0]))
+        return groups
+
     primary = pods[0][0]
     home = next(p for p in pods if primary in p)
-    groups = [([primary], label(primary))]
-    rest = [m for m in home if m != primary]
-    if rest:
-        groups.append((rest, label(rest[0]) if len(rest) == 1 else home[0].split(".")[0]))
+    groups = [([primary], label(primary))] + pod_groups([m for m in home if m != primary])
     for pod in pods:
         if pod is not home:
-            groups.append((pod, label(pod[0]) if len(pod) == 1 else pod[0].split(".")[0]))
+            groups += pod_groups(pod)
 
     for members, tab_label in groups:
         panes = [p for p in (pane_for(m) for m in members) if p]
