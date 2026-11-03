@@ -27,8 +27,11 @@ after moving node or OpenRig.
 - **`rig-herdr-layout <rig> [<rig> ...]`** lays out a rig's space now. It opens the space first if
   there isn't one. The rig name is the RIG column of `rig ps`.
 - **`rig-herdr-watch`** (the service) listens to herdr's event stream. When a space in OpenRig's
-  default layout appears and has been quiet for a few seconds, it runs `rig-herdr-layout` on it. A
-  layout runs once per space; spaces already laid out are left alone.
+  default layout appears and has been quiet for a few seconds, it runs `rig-herdr-layout` on it. Each
+  space is laid out at most once while the watcher runs; restart the service to retry one.
+
+Neither one switches herdr to another space: a layout only shows its first tab when you're already in
+that space.
 
 ## Good to know
 

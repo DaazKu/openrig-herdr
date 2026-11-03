@@ -5,6 +5,7 @@ Tab 1 holds only the person's primary contact (the first pod's first member;
 the kernel's operator). Leftover members of that pod get tab 2. Every other
 pod follows in spec order, its members as panes. Existing panes are moved, not
 restarted; seats without a pane get one attached to their tmux session.
+It never switches herdr to another space.
 Panes that attach to no seat of the rig end up in a final "other" tab.
 
 Usage: rig-herdr-layout <rig> [<rig> ...]   (opens the space first if missing)
@@ -86,7 +87,7 @@ def tmux_has(session):
 def place(panes, tab_label):
     """Move panes into one new tab: 1 | 2/3 for three, a 2x2 grid for four."""
     first = panes[0]
-    tab = herdr("pane", "move", first, "--new-tab")["move_result"]["created_tab"]["tab_id"]
+    tab = herdr("pane", "move", first, "--new-tab", "--no-focus")["move_result"]["created_tab"]["tab_id"]
     herdr("tab", "rename", tab, tab_label)
     layout = {1: [], 2: [(1, 0, "right")], 3: [(1, 0, "right"), (2, 1, "down")],
               4: [(1, 0, "right"), (2, 0, "down"), (3, 1, "down")]}.get(len(panes))
@@ -94,7 +95,7 @@ def place(panes, tab_label):
         layout = [(i, i - 1, "right") for i in range(1, len(panes))]
     for i, target, direction in layout:
         herdr("pane", "move", panes[i], "--tab", tab, "--target-pane", panes[target],
-              "--split", direction)
+              "--split", direction, "--no-focus")
 
 
 def layout(rig, ws=None):
@@ -156,8 +157,10 @@ def layout(rig, ws=None):
     if others:
         place(others, "other")
         print(f"  tab other: {len(others)} pane(s) not attached to a seat")
-    first = herdr("tab", "list", "--workspace", ws)["tabs"][0]["tab_id"]
-    herdr("tab", "focus", first)
+    # Show tab 1 only in a space the person is already looking at: `tab focus` also switches
+    # herdr to that space.
+    if any(w["workspace_id"] == ws and w["focused"] for w in herdr("workspace", "list")["workspaces"]):
+        herdr("tab", "focus", herdr("tab", "list", "--workspace", ws)["tabs"][0]["tab_id"])
 
 
 if __name__ == "__main__":
