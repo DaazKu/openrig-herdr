@@ -8,7 +8,10 @@ layout is handed to rig-herdr-layout:
 - a tab labelled `openrig:rig:<rig>#...` (what `rig terminal open <rig>` makes);
 - the kernel space ("openrig kernel") while it has no "queue" tab.
 
-Spaces already laid out lose those markers, so a layout runs once per space.
+Spaces already laid out lose those markers. The watcher also lays out each space
+at most once while it runs, so a space that keeps a marker (a seat with no tmux
+session leaves the kernel without its "queue" tab) is not laid out again on every
+event, including the ones its own layout causes.
 """
 import json
 import os
@@ -49,26 +52,26 @@ def pending_spaces():
     return found
 
 
-def sweep(failed):
+def sweep(handled):
     for ws, rig in pending_spaces():
-        if (ws, rig) in failed:
+        if ws in handled:
             continue
+        handled.add(ws)
         log(f"laying out {rig} in {ws}")
         result = subprocess.run([LAYOUT, "--workspace", ws, rig], capture_output=True, text=True)
         log(result.stdout.strip())
         if result.returncode != 0:
             log(f"layout failed for {rig} in {ws}; not retrying it: {result.stderr.strip()[-500:]}")
-            failed.add((ws, rig))
 
 
-def watch(failed):
+def watch(handled):
     sock = socket.socket(socket.AF_UNIX)
     sock.connect(SOCKET)
     request = {"id": "rig-herdr-watch", "method": "events.subscribe",
                "params": {"subscriptions": [{"type": t} for t in EVENTS]}}
     sock.sendall((json.dumps(request) + "\n").encode())
     log("subscribed to herdr events")
-    sweep(failed)
+    sweep(handled)
     due = None
     buf = b""
     while True:
@@ -86,14 +89,14 @@ def watch(failed):
                 due = time.monotonic() + QUIET_SECONDS
         if due and time.monotonic() >= due:
             due = None
-            sweep(failed)
+            sweep(handled)
 
 
 def main():
-    failed = set()
+    handled = set()
     while True:
         try:
-            watch(failed)
+            watch(handled)
         except (OSError, ConnectionError, subprocess.CalledProcessError, ValueError) as e:
             log(f"{e}; retrying in {RETRY_SECONDS}s")
             time.sleep(RETRY_SECONDS)
